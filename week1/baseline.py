@@ -59,7 +59,7 @@ def load_data(mode='train'):
             label = np.array(labels[i]).astype('float32')
             # 在使用卷积神经网络结构时，uncomment 下面两行代码
             img = np.reshape(imgs[i], [1, IMG_ROWS, IMG_COLS]).astype('float32')
-            label = np.reshape(labels[i], [1]).astype('float32')
+            label = np.reshape(labels[i], [1]).astype('int64')
 
             imgs_list.append(img)
             labels_list.append(label)
@@ -89,7 +89,7 @@ class MNIST(paddle.nn.Layer):
         # 定义池化层，池化核的大小kernel_size为2，池化步长为2
         self.max_pool2 = MaxPool2D(kernel_size=2, stride=2)
         # 定义一层全连接层，输出维度是1
-        self.fc = Linear(in_features=980, out_features=1)
+        self.fc = Linear(in_features=980, out_features=10)
 
     # 定义网络前向计算过程，卷积后紧接着使用池化层，最后使用全连接层计算最终输出
     # 卷积层激活函数使用Relu，全连接层不使用激活函数
@@ -130,7 +130,7 @@ def train(model):
             predicts = model(images)
 
             # 计算损失，取一个批次样本损失的平均值
-            loss = F.square_error_cost(predicts, labels)
+            loss = F.cross_entropy(predicts, labels)
             avg_loss = paddle.mean(loss)
 
             # 每训练200批次的数据，打印下当前Loss的情况
