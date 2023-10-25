@@ -7,9 +7,12 @@ import matplotlib.pyplot as plt
 from PIL import Image
 import paddle
 from paddle.nn import Conv2D, MaxPool2D, Linear
+from torchvision import datasets, transforms
+from torch.utils.data import DataLoader
 import paddle.nn.functional as F
 import gzip
 import json
+import load
 # 定义数据集读取器
 def load_data(mode='train'):
     # 加载数据
@@ -74,6 +77,11 @@ def load_data(mode='train'):
             yield np.array(imgs_list), np.array(labels_list)
 
     return data_generator
+
+
+
+
+
 # 定义多层全连接神经网络
 # 多层卷积神经网络实现
 import paddle.nn.functional as F
@@ -95,64 +103,19 @@ class MNIST(paddle.nn.Layer):
         # 定义一层全连接层，输出维度是10
         self.fc = Linear(in_features=980, out_features=10)
 
-    # 加入对每一层输入和输出的尺寸和数据内容的打印，根据check参数决策是否打印每层的参数和输出尺寸
     # 卷积层激活函数使用Relu，全连接层激活函数使用softmax
-    def forward(self, inputs, label=None, check_shape=False, check_content=False):
-        # 给不同层的输出不同命名，方便调试
-        outputs1 = self.conv1(inputs)
-        outputs2 = F.relu(outputs1)
-        outputs3 = self.max_pool1(outputs2)
-        outputs4 = self.conv2(outputs3)
-        outputs5 = F.relu(outputs4)
-        outputs6 = self.max_pool2(outputs5)
-        outputs6 = paddle.reshape(outputs6, [outputs6.shape[0], -1])
-        outputs7 = self.fc(outputs6)
+    @paddle.jit.to_static
+    def forward(self, inputs):
 
-        # 选择是否打印神经网络每层的参数尺寸和输出尺寸，验证网络结构是否设置正确
-        if check_shape:
-            # 打印每层网络设置的超参数-卷积核尺寸，卷积步长，卷积padding，池化核尺寸
-            print("\n########## print network layer's superparams ##############")
-            print("conv1-- kernel_size:{}, padding:{}, stride:{}".format(self.conv1.weight.shape, self.conv1._padding,
-                                                                         self.conv1._stride))
-            print("conv2-- kernel_size:{}, padding:{}, stride:{}".format(self.conv2.weight.shape, self.conv2._padding,
-                                                                         self.conv2._stride))
-            # print("max_pool1-- kernel_size:{}, padding:{}, stride:{}".format(self.max_pool1.pool_size, self.max_pool1.pool_stride, self.max_pool1._stride))
-            # print("max_pool2-- kernel_size:{}, padding:{}, stride:{}".format(self.max_pool2.weight.shape, self.max_pool2._padding, self.max_pool2._stride))
-            print("fc-- weight_size:{}, bias_size_{}".format(self.fc.weight.shape, self.fc.bias.shape))
-
-            # 打印每层的输出尺寸
-            print("\n########## print shape of features of every layer ###############")
-            print("inputs_shape: {}".format(inputs.shape))
-            print("outputs1_shape: {}".format(outputs1.shape))
-            print("outputs2_shape: {}".format(outputs2.shape))
-            print("outputs3_shape: {}".format(outputs3.shape))
-            print("outputs4_shape: {}".format(outputs4.shape))
-            print("outputs5_shape: {}".format(outputs5.shape))
-            print("outputs6_shape: {}".format(outputs6.shape))
-            print("outputs7_shape: {}".format(outputs7.shape))
-            # print("outputs8_shape: {}".format(outputs8.shape))
-
-        # 选择是否打印训练过程中的参数和输出内容，可用于训练过程中的调试
-        if check_content:
-            # 打印卷积层的参数-卷积核权重，权重参数较多，此处只打印部分参数
-            print("\n########## print convolution layer's kernel ###############")
-            print("conv1 params -- kernel weights:", self.conv1.weight[0][0])
-            print("conv2 params -- kernel weights:", self.conv2.weight[0][0])
-
-            # 创建随机数，随机打印某一个通道的输出值
-            idx1 = np.random.randint(0, outputs1.shape[1])
-            idx2 = np.random.randint(0, outputs4.shape[1])
-            # 打印卷积-池化后的结果，仅打印batch中第一个图像对应的特征
-            print("\nThe {}th channel of conv1 layer: ".format(idx1), outputs1[0][idx1])
-            print("The {}th channel of conv2 layer: ".format(idx2), outputs4[0][idx2])
-            print("The output of last layer:", outputs7[0], '\n')
-
-        # 如果label不是None，则计算分类精度并返回
-        if label is not None:
-            acc = paddle.metric.accuracy(input=F.softmax(outputs7), label=label)
-            return outputs7, acc
-        else:
-            return outputs7
+        x = self.conv1(inputs)
+        x = F.relu(x)
+        x = self.max_pool1(x)
+        x = self.conv2(x)
+        x = F.relu(x)
+        x = self.max_pool2(x)
+        x = paddle.reshape(x, [x.shape[0], -1])
+        x = self.fc(x)
+        return x
 
 
 # 在使用GPU机器时，可以将use_gpu变量设置成True
@@ -170,24 +133,22 @@ def train(model):
     # opt = paddle.optimizer.Adagrad(learning_rate=0.01, parameters=model.parameters())
     # opt = paddle.optimizer.Adam(learning_rate=0.01, parameters=model.parameters())
     # 调用加载数据的函数
+    # train_custom_dataset = load.minist()
     train_loader = load_data('train')
+    # train_loader = paddle.io.DataLoader(train_custom_dataset, batch_size=64, shuffle=True, num_workers=1,
+    #                                     drop_last=True)
+
     EPOCH_NUM = 1
     for epoch_id in range(EPOCH_NUM):
         for batch_id, data in enumerate(train_loader()):
             # 准备数据，变得更加简洁
             images, labels = data
-            images = paddle.to_tensor(images)
-            labels = paddle.to_tensor(labels)
+            print(images.shape)
+            images = paddle.to_tensor(images,dtype="float64")
 
             # 前向计算的过程，同时拿到模型输出值和分类准确率
-            if batch_id == 0 and epoch_id == 0:
-                # 打印模型参数和每层输出的尺寸
-                predicts, acc = model(images, labels, check_shape=True, check_content=False)
-            elif batch_id == 401:
-                # 打印模型参数和每层输出的值
-                predicts, acc = model(images, labels, check_shape=False, check_content=True)
-            else:
-                predicts, acc = model(images, labels)
+
+            predicts= model(images)
 
             # 计算损失，取一个批次样本损失的平均值
             loss = F.cross_entropy(predicts, labels)
@@ -195,8 +156,7 @@ def train(model):
 
             # 每训练了100批次的数据，打印下当前Loss的情况
             if batch_id % 200 == 0:
-                print("epoch: {}, batch: {}, loss is: {}, acc is {}".format(epoch_id, batch_id, avg_loss.numpy(),
-                                                                            acc.numpy()))
+                print("epoch: {}, batch: {}, loss is: {}".format(epoch_id, batch_id, avg_loss.numpy()))
 
             # 后向传播，更新参数的过程
             avg_loss.backward()
@@ -207,9 +167,41 @@ def train(model):
     paddle.save(model.state_dict(), 'mnist_test.pdparams')
 
 
+def product(images="week1/mnist/train/imgs/9/19667.jpg"):
+    model = MNIST()
+
+    model_dict = paddle.load("mnist_test.pdparams")
+    model.set_state_dict(model_dict)
+    model.eval()
+    image = Image.open("E:/八斗文库/paddlepaddle/week1/mnist/train/imgs/5/0.jpg")  # 替换为您的图像文件路径
+
+    # 将图像转换为NumPy数组
+    image_np = np.array(image)
+    print(image_np.shape)
+    images = paddle.to_tensor(image_np.reshape(1, 28, 28), dtype="float64")
+
+    # 前向计算的过程，同时拿到模型输出值和分类准确率
+
+    predicts= model(images)
+    print(predicts)
+    return predicts
+
+
 # 创建模型
+import time
+
+start_time = time.time()
+
+# 在这里写下你需要进行计时的代码
 model = MNIST()
 # 启动训练过程
 train(model)
+product()
+end_time = time.time()
+
+elapsed_time = end_time - start_time
+
+print(f"执行时间为：{elapsed_time}秒")
+
 
 print("Model has been saved.")
