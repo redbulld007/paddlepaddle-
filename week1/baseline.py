@@ -4,6 +4,7 @@ import random
 import paddle
 import numpy as np
 import matplotlib.pyplot as plt
+import torch
 from PIL import Image
 import paddle
 from paddle.nn import Conv2D, MaxPool2D, Linear
@@ -94,6 +95,7 @@ class MNIST(paddle.nn.Layer):
         self.max_pool2 = MaxPool2D(kernel_size=2, stride=2)
         # 定义一层全连接层，输出维度是10
         self.fc = Linear(in_features=980, out_features=10)
+        self.sofmax =paddle.nn.Softmax()
 
     # 加入对每一层输入和输出的尺寸和数据内容的打印，根据check参数决策是否打印每层的参数和输出尺寸
     # 卷积层激活函数使用Relu，全连接层激活函数使用softmax
@@ -107,6 +109,7 @@ class MNIST(paddle.nn.Layer):
         outputs6 = self.max_pool2(outputs5)
         outputs6 = paddle.reshape(outputs6, [outputs6.shape[0], -1])
         outputs7 = self.fc(outputs6)
+        outputs7 =self.sofmax(outputs7)
 
         # 选择是否打印神经网络每层的参数尺寸和输出尺寸，验证网络结构是否设置正确
         if check_shape:
@@ -210,6 +213,16 @@ def train(model):
 # 创建模型
 model = MNIST()
 # 启动训练过程
-train(model)
+# train(model)
+import cv2
+image_path = "0.jpg"  # 请替换为您的图像文件路径
+image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)  # 使用灰度模式加载图像
 
+# 将图像转换为NumPy数组
+image_np = np.array(image, dtype=np.float32).reshape((1,1,28,28))
+# 转换为PaddlePaddle张量
+print(image_np.reshape((1,1,28,28)).shape)
+image_tensor = paddle.to_tensor(image_np)
+p= model.forward(image_tensor)
+print(p)
 print("Model has been saved.")
