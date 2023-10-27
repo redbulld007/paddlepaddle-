@@ -1,140 +1,129 @@
-# 图像分类，眼疾识别
-# 导入需要的包
-import paddle
-import numpy as np
-from paddle.nn import Conv2D, MaxPool2D, Linear
-
-## 组网
-import paddle.nn.functional as F
-
-# 定义 LeNet 网络结构
-class LeNet(paddle.nn.Layer):
-    def __init__(self, num_classes=1):
-        super(LeNet, self).__init__()
-        # 创建卷积和池化层
-        # 创建第1个卷积层
-        self.conv1 = Conv2D(in_channels=1, out_channels=6, kernel_size=5)
-        self.max_pool1 = MaxPool2D(kernel_size=2, stride=2)
-        # 尺寸的逻辑：池化层未改变通道数；当前通道数为6
-        # 创建第2个卷积层
-        self.conv2 = Conv2D(in_channels=6, out_channels=16, kernel_size=5)
-        self.max_pool2 = MaxPool2D(kernel_size=2, stride=2)
-        # 创建第3个卷积层
-        self.conv3 = Conv2D(in_channels=16, out_channels=120, kernel_size=4)
-        # 尺寸的逻辑：输入层将数据拉平[B,C,H,W] -> [B,C*H*W]
-        # 输入size是[28,28]，经过三次卷积和两次池化之后，C*H*W等于120
-        self.fc1 = Linear(in_features=120, out_features=64)
-        # 创建全连接层，第一个全连接层的输出神经元个数为64， 第二个全连接层输出神经元个数为分类标签的类别数
-        self.fc2 = Linear(in_features=64, out_features=num_classes)
-    # 网络的前向计算过程
-    def forward(self, x):
-        x = self.conv1(x)
-        # 每个卷积层使用Sigmoid激活函数，后面跟着一个2x2的池化
-        x = F.sigmoid(x)
-        x = self.max_pool1(x)
-        x = F.sigmoid(x)
-        x = self.conv2(x)
-        x = self.max_pool2(x)
-        x = self.conv3(x)
-        # 尺寸的逻辑：输入层将数据拉平[B,C,H,W] -> [B,C*H*W]
-        x = paddle.reshape(x, [x.shape[0], -1])
-        x = self.fc1(x)
-        x = F.sigmoid(x)
-        x = self.fc2(x)
-        return x
-
-
-# 输入数据形状是 [N, 1, H, W]
-# 这里用np.random创建一个随机数组作为输入数据
-x = np.random.randn(*[3,1,28,28])
-x = x.astype('float32')
-
-# 创建LeNet类的实例，指定模型名称和分类的类别数目
-model = LeNet(num_classes=10)
-# 通过调用LeNet从基类继承的sublayers()函数，
-# 查看LeNet中所包含的子层
-print(model.sublayers())
-x = paddle.to_tensor(x)
-for item in model.sublayers():
-    # item是LeNet类中的一个子层
-    # 查看经过子层之后的输出数据形状
-    try:
-        x = item(x)
-    except:
-        x = paddle.reshape(x, [x.shape[0], -1])
-        x = item(x)
-    if len(item.parameters())==2:
-        # 查看卷积和全连接层的数据和参数的形状，
-        # 其中item.parameters()[0]是权重参数w，item.parameters()[1]是偏置参数b
-        print(item.full_name(), x.shape, item.parameters()[0].shape, item.parameters()[1].shape)
-    else:
-        # 池化层没有参数
-        print(item.full_name(), x.shape)
-
-# -*- coding: utf-8 -*-
-# LeNet 识别手写数字
-import os
+import cv2
 import random
-import paddle
 import numpy as np
-import paddle
-from paddle.vision.transforms import ToTensor
-from paddle.vision.datasets import MNIST
-
-# 定义训练过程
-def train(model, opt, train_loader, valid_loader):
-    # 开启0号GPU训练
-    use_gpu = True
-    paddle.device.set_device('gpu:0') if use_gpu else paddle.device.set_device('cpu')
-    print('start training ... ')
-    model.train()
-    for epoch in range(EPOCH_NUM):
-        for batch_id, data in enumerate(train_loader()):
-            img = data[0]
-            label = data[1]
-            # 计算模型输出
-            logits = model(img)
-            # 计算损失函数
-            loss_func = paddle.nn.CrossEntropyLoss(reduction='none')
-            loss = loss_func(logits, label)
-            avg_loss = paddle.mean(loss)
-
-            if batch_id % 2000 == 0:
-                print("epoch: {}, batch_id: {}, loss is: {:.4f}".format(epoch, batch_id, float(avg_loss.numpy())))
-            avg_loss.backward()
-            opt.step()
-            opt.clear_grad()
-
-        model.eval()
-        accuracies = []
-        losses = []
-        for batch_id, data in enumerate(valid_loader()):
-            img = data[0]
-            label = data[1]
-            # 计算模型输出
-            logits = model(img)
-            pred = F.softmax(logits)
-            # 计算损失函数
-            loss_func = paddle.nn.CrossEntropyLoss(reduction='none')
-            loss = loss_func(logits, label)
-            acc = paddle.metric.accuracy(pred, label)
-            accuracies.append(acc.numpy())
-            losses.append(loss.numpy())
-        print("[validation] accuracy/loss: {:.4f}/{:.4f}".format(np.mean(accuracies), np.mean(losses)))
-        model.train()
-
-    # 保存模型参数
-    paddle.save(model.state_dict(), 'mnist.pdparams')
+import os
 
 
-# 创建模型
-model = LeNet(num_classes=10)
-# 设置迭代轮数
-EPOCH_NUM = 5
-# 设置优化器为Momentum，学习率为0.001
-opt = paddle.optimizer.Momentum(learning_rate=0.001, momentum=0.9, parameters=model.parameters())
-# 定义数据读取器
-train_loader = paddle.io.DataLoader(MNIST(mode='train', transform=ToTensor()), batch_size=10, shuffle=True)
-valid_loader = paddle.io.DataLoader(MNIST(mode='test', transform=ToTensor()), batch_size=10)
-# 启动训练过程
-train(model, opt, train_loader, valid_loader)
+# 对读入的图像数据进行预处理
+def transform_img(img):
+    # 将图片尺寸缩放道 224x224
+    img = cv2.resize(img, (224, 224))
+    # 读入的图像数据格式是[H, W, C]
+    # 使用转置操作将其变成[C, H, W]
+    img = np.transpose(img, (2,0,1))
+    img = img.astype('float32')
+    # 将数据范围调整到[-1.0, 1.0]之间
+    img = img / 255.
+    img = img * 2.0 - 1.0
+    return img
+
+# 定义训练集数据读取器
+def data_loader(datadir, batch_size=10, mode = 'train'):
+    # 将datadir目录下的文件列出来，每条文件都要读入
+    filenames = os.listdir(datadir)
+
+    def reader():
+        if mode == 'train':
+            # 训练时随机打乱数据顺序
+            random.shuffle(filenames)
+        batch_imgs = []
+        batch_labels = []
+        for name in filenames:
+            filepath = os.path.join(datadir, name)
+            img = cv2.imread(filepath)
+            img = transform_img(img)
+            if name[0] == 'H' or name[0] == 'N':
+                # H开头的文件名表示高度近似，N开头的文件名表示正常视力
+                # 高度近视和正常视力的样本，都不是病理性的，属于负样本，标签为0
+                label = 0
+            elif name[0] == 'P':
+                # P开头的是病理性近视，属于正样本，标签为1
+                label = 1
+            else:
+                raise('Not excepted file name')
+            # 每读取一个样本的数据，就将其放入数据列表中
+            batch_imgs.append(img)
+            batch_labels.append(label)
+            if len(batch_imgs) == batch_size:
+                # 当数据列表的长度等于batch_size的时候，
+                # 把这些数据当作一个mini-batch，并作为数据生成器的一个输出
+                imgs_array = np.array(batch_imgs).astype('float32')
+                labels_array = np.array(batch_labels).astype('float32').reshape(-1, 1)
+                yield imgs_array, labels_array
+                batch_imgs = []
+                batch_labels = []
+
+        if len(batch_imgs) > 0:
+            # 剩余样本数目不足一个batch_size的数据，一起打包成一个mini-batch
+            imgs_array = np.array(batch_imgs).astype('float32')
+            labels_array = np.array(batch_labels).astype('float32').reshape(-1, 1)
+            yield imgs_array, labels_array
+
+
+    return reader
+
+# 定义验证集数据读取器
+def valid_data_loader(datadir, csvfile, batch_size=10, mode='valid'):
+    # 训练集读取时通过文件名来确定样本标签，验证集则通过csvfile来读取每个图片对应的标签
+    # 请查看解压后的验证集标签数据，观察csvfile文件里面所包含的内容
+    # csvfile文件所包含的内容格式如下，每一行代表一个样本，
+    # 其中第一列是图片id，第二列是文件名，第三列是图片标签，
+    # 第四列和第五列是Fovea的坐标，与分类任务无关
+    # ID,imgName,Label,Fovea_X,Fovea_Y
+    # 1,V0001.jpg,0,1157.74,1019.87
+    # 2,V0002.jpg,1,1285.82,1080.47
+    # 打开包含验证集标签的csvfile，并读入其中的内容
+    filelists = open(csvfile).readlines()
+    def reader():
+        batch_imgs = []
+        batch_labels = []
+        for line in filelists[1:]:
+            line = line.strip().split(',')
+            name = line[1]
+            label = int(line[2])
+            # 根据图片文件名加载图片，并对图像数据作预处理
+            filepath = os.path.join(datadir, name)
+            img = cv2.imread(filepath)
+            img = transform_img(img)
+            # 每读取一个样本的数据，就将其放入数据列表中
+            batch_imgs.append(img)
+            batch_labels.append(label)
+            if len(batch_imgs) == batch_size:
+                # 当数据列表的长度等于batch_size的时候，
+                # 把这些数据当作一个mini-batch，并作为数据生成器的一个输出
+                imgs_array = np.array(batch_imgs).astype('float32')
+                labels_array = np.array(batch_labels).astype('float32').reshape(-1, 1)
+                yield imgs_array, labels_array
+                batch_imgs = []
+                batch_labels = []
+
+        if len(batch_imgs) > 0:
+            # 剩余样本数目不足一个batch_size的数据，一起打包成一个mini-batch
+            imgs_array = np.array(batch_imgs).astype('float32')
+            labels_array = np.array(batch_labels).astype('float32').reshape(-1, 1)
+            yield imgs_array, labels_array
+
+    return reader
+# 查看数据形状
+DATADIR = '.\data\PALM-Training400\PALM-Training400'
+DATADIR_VAL = './data/PALM-Validation400'
+csvfile = '.\data\labels.csv'
+
+# train_loader = data_loader(DATADIR,
+#                            batch_size=10, mode='train')
+# data_reader = train_loader()
+# data = next(data_reader)
+# data[0].shape, data[1].shape
+#
+# eval_loader = data_loader(DATADIR,
+#                            batch_size=10, mode='eval')
+# data_reader = eval_loader()
+# data = next(data_reader)
+img = cv2.imread('./data/PALM-Validation400/V0001.jpg')
+valid_data = valid_data_loader(DATADIR_VAL,csvfile,
+                           batch_size=10, mode='eval')
+data_reader = valid_data()
+data = next(data_reader)
+
+print(data[0].shape, data[1].shape)
+
