@@ -104,26 +104,168 @@ def valid_data_loader(datadir, csvfile, batch_size=10, mode='valid'):
             yield imgs_array, labels_array
 
     return reader
-# 查看数据形状
-DATADIR = '.\data\PALM-Training400\PALM-Training400'
-DATADIR_VAL = './data/PALM-Validation400'
-csvfile = '.\data\labels.csv'
 
-# train_loader = data_loader(DATADIR,
-#                            batch_size=10, mode='train')
-# data_reader = train_loader()
-# data = next(data_reader)
-# data[0].shape, data[1].shape
-#
-# eval_loader = data_loader(DATADIR,
-#                            batch_size=10, mode='eval')
-# data_reader = eval_loader()
-# data = next(data_reader)
-img = cv2.imread('./data/PALM-Validation400/V0001.jpg')
-valid_data = valid_data_loader(DATADIR_VAL,csvfile,
-                           batch_size=10, mode='eval')
-data_reader = valid_data()
-data = next(data_reader)
+# -*- coding: utf-8 -*-
+# LeNet 识别眼疾图片
+import os
+import random
+import paddle
+import numpy as np
 
-print(data[0].shape, data[1].shape)
+DATADIR = './data/PALM-Training400/PALM-Training400'
+DATADIR2 = './data/PALM-Validation400'
+CSVFILE = './data/labels.csv'
+# 设置迭代轮数
+EPOCH_NUM = 5
+
+# 定义训练过程
+def train_pm(model, optimizer):
+    # 开启0号GPU训练
+    use_gpu = True
+    paddle.device.set_device('gpu:0') if use_gpu else paddle.device.set_device('cpu')
+
+    print('start training ... ')
+    model.train()
+    # 定义数据读取器，训练数据读取器和验证数据读取器
+    train_loader = data_loader(DATADIR, batch_size=10, mode='train')
+    valid_loader = valid_data_loader(DATADIR2, CSVFILE)
+    for epoch in range(EPOCH_NUM):
+        for batch_id, data in enumerate(train_loader()):
+            x_data, y_data = data
+            img = paddle.to_tensor(x_data)
+            label = paddle.to_tensor(y_data)
+            # 运行模型前向计算，得到预测值
+            logits = model(img)
+            loss = F.binary_cross_entropy_with_logits(logits, label)
+            avg_loss = paddle.mean(loss)
+
+            if batch_id % 20 == 0:
+                print("epoch: {}, batch_id: {}, loss is: {:.4f}".format(epoch, batch_id, float(avg_loss.numpy())))
+            # 反向传播，更新权重，清除梯度
+            avg_loss.backward()
+            optimizer.step()
+            optimizer.clear_grad()
+
+        model.eval()
+        accuracies = []
+        losses = []
+        for batch_id, data in enumerate(valid_loader()):
+            x_data, y_data = data
+            img = paddle.to_tensor(x_data)
+            label = paddle.to_tensor(y_data)
+            # 运行模型前向计算，得到预测值
+            logits = model(img)
+            # 二分类，sigmoid计算后的结果以0.5为阈值分两个类别
+            # 计算sigmoid后的预测概率，进行loss计算
+            pred = F.sigmoid(logits)
+            loss = F.binary_cross_entropy_with_logits(logits, label)
+            # 计算预测概率小于0.5的类别
+            pred2 = pred * (-1.0) + 1.0
+            # 得到两个类别的预测概率，并沿第一个维度级联
+            pred = paddle.concat([pred2, pred], axis=1)
+            acc = paddle.metric.accuracy(pred, paddle.cast(label, dtype='int64'))
+
+            accuracies.append(acc.numpy())
+            losses.append(loss.numpy())
+        print("[validation] accuracy/loss: {:.4f}/{:.4f}".format(np.mean(accuracies), np.mean(losses)))
+        model.train()
+
+        paddle.save(model.state_dict(), 'palm.pdparams')
+        paddle.save(optimizer.state_dict(), 'palm.pdopt')
+
+# 定义评估过程
+def evaluation(model, params_file_path):
+
+    # 开启0号GPU预估
+    use_gpu = True
+    paddle.device.set_device('gpu:0') if use_gpu else paddle.device.set_device('cpu')
+
+    print('start evaluation .......')
+
+    #加载模型参数
+    model_state_dict = paddle.load(params_file_path)
+    model.load_dict(model_state_dict)
+
+    model.eval()
+    eval_loader = data_loader(DATADIR,
+                        batch_size=10, mode='eval')
+
+    acc_set = []
+    avg_loss_set = []
+    for batch_id, data in enumerate(eval_loader()):
+        x_data, y_data = data
+        img = paddle.to_tensor(x_data)
+        label = paddle.to_tensor(y_data)
+        y_data = y_data.astype(np.int64)
+        label_64 = paddle.to_tensor(y_data)
+        # 计算预测和精度
+        prediction, acc = model(img, label_64)
+        # 计算损失函数值
+        loss = F.binary_cross_entropy_with_logits(prediction, label)
+        avg_loss = paddle.mean(loss)
+        acc_set.append(float(acc.numpy()))
+        avg_loss_set.append(float(avg_loss.numpy()))
+    # 求平均精度
+    acc_val_mean = np.array(acc_set).mean()
+    avg_loss_val_mean = np.array(avg_loss_set).mean()
+
+    print('loss={:.4f}, acc={:.4f}'.format(avg_loss_val_mean, acc_val_mean))
+
+
+# -*- coding:utf-8 -*-
+
+# 导入需要的包
+import paddle
+import numpy as np
+from paddle.nn import Conv2D, MaxPool2D, Linear, Dropout
+import paddle.nn.functional as F
+
+# 定义 LeNet 网络结构
+class LeNet(paddle.nn.Layer):
+    def __init__(self, num_classes=1):
+        super(LeNet, self).__init__()
+        self.num_classes = num_classes
+        # 创建卷积和池化层块，每个卷积层使用Sigmoid激活函数，后面跟着一个2x2的池化
+        self.conv1 = Conv2D(in_channels=3, out_channels=6, kernel_size=5)
+        self.max_pool1 = MaxPool2D(kernel_size=2, stride=2)
+        self.conv2 = Conv2D(in_channels=6, out_channels=16, kernel_size=5)
+        self.max_pool2 = MaxPool2D(kernel_size=2, stride=2)
+        # 创建第3个卷积层
+        self.conv3 = Conv2D(in_channels=16, out_channels=120, kernel_size=4)
+        # 创建全连接层，第一个全连接层的输出神经元个数为64
+        self.fc1 = Linear(in_features=300000, out_features=64)
+        # 第二个全连接层输出神经元个数为分类标签的类别数
+        self.fc2 = Linear(in_features=64, out_features=num_classes)
+
+    # 网络的前向计算过程
+    def forward(self, x, label=None):
+        x = self.conv1(x)
+        x = F.sigmoid(x)
+        x = self.max_pool1(x)
+        x = self.conv2(x)
+        x = F.sigmoid(x)
+        x = self.max_pool2(x)
+        x = self.conv3(x)
+        x = F.sigmoid(x)
+        x = paddle.reshape(x, [x.shape[0], -1])
+        x = self.fc1(x)
+        x = F.sigmoid(x)
+        x = self.fc2(x)
+        if label is not None:
+            if self.num_classes == 1:
+                pred = F.sigmoid(x)
+                pred = paddle.concat([1.0 - pred, pred], axis=1)
+                acc = paddle.metric.accuracy(pred, paddle.cast(label, dtype='int64'))
+            else:
+                acc = paddle.metric.accuracy(x, paddle.cast(label, dtype='int64'))
+            return x, acc
+        else:
+            return x
+
+# 创建模型
+model = LeNet(num_classes=1)
+# 启动训练过程
+opt = paddle.optimizer.Momentum(learning_rate=0.001, momentum=0.9, parameters=model.parameters())
+train_pm(model, optimizer=opt)
+evaluation(model, params_file_path="palm.pdparams")
 
