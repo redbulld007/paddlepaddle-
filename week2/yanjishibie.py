@@ -230,102 +230,201 @@ from paddle.nn import Conv2D, MaxPool2D, Linear, Dropout
 ## 组网
 import paddle.nn.functional as F
 
-# GoogLeNet模型代码
+# ResNet模型代码
 import numpy as np
 import paddle
-from paddle.nn import Conv2D, MaxPool2D, AdaptiveAvgPool2D, Linear
-## 组网
+import paddle.nn as nn
 import paddle.nn.functional as F
 
 
-# 定义Inception块
-class Inception(paddle.nn.Layer):
-    def __init__(self, c0, c1, c2, c3, c4, **kwargs):
-        '''
-        Inception模块的实现代码，
+# ResNet中使用了BatchNorm层，在卷积层的后面加上BatchNorm以提升数值稳定性
+# 定义卷积批归一化块
+class ConvBNLayer(paddle.nn.Layer):
+    def __init__(self,
+                 num_channels,
+                 num_filters,
+                 filter_size,
+                 stride=1,
+                 groups=1,
+                 act=None):
 
-        c1,图(b)中第一条支路1x1卷积的输出通道数，数据类型是整数
-        c2,图(b)中第二条支路卷积的输出通道数，数据类型是tuple或list,
-               其中c2[0]是1x1卷积的输出通道数，c2[1]是3x3
-        c3,图(b)中第三条支路卷积的输出通道数，数据类型是tuple或list,
-               其中c3[0]是1x1卷积的输出通道数，c3[1]是3x3
-        c4,图(b)中第一条支路1x1卷积的输出通道数，数据类型是整数
-        '''
-        super(Inception, self).__init__()
-        # 依次创建Inception块每条支路上使用到的操作
-        self.p1_1 = Conv2D(in_channels=c0, out_channels=c1, kernel_size=1, stride=1)
-        self.p2_1 = Conv2D(in_channels=c0, out_channels=c2[0], kernel_size=1, stride=1)
-        self.p2_2 = Conv2D(in_channels=c2[0], out_channels=c2[1], kernel_size=3, padding=1, stride=1)
-        self.p3_1 = Conv2D(in_channels=c0, out_channels=c3[0], kernel_size=1, stride=1)
-        self.p3_2 = Conv2D(in_channels=c3[0], out_channels=c3[1], kernel_size=5, padding=2, stride=1)
-        self.p4_1 = MaxPool2D(kernel_size=3, stride=1, padding=1)
-        self.p4_2 = Conv2D(in_channels=c0, out_channels=c4, kernel_size=1, stride=1)
+        """
+        num_channels, 卷积层的输入通道数
+        num_filters, 卷积层的输出通道数
+        stride, 卷积层的步幅
+        groups, 分组卷积的组数，默认groups=1不使用分组卷积
+        """
+        super(ConvBNLayer, self).__init__()
 
-        # # 新加一层batchnorm稳定收敛
-        # self.batchnorm = paddle.nn.BatchNorm2D(c1+c2[1]+c3[1]+c4)
+        # 创建卷积层
+        self._conv = nn.Conv2D(
+            in_channels=num_channels,
+            out_channels=num_filters,
+            kernel_size=filter_size,
+            stride=stride,
+            padding=(filter_size - 1) // 2,
+            groups=groups,
+            bias_attr=False)
 
-    def forward(self, x):
-        # 支路1只包含一个1x1卷积
-        p1 = F.relu(self.p1_1(x))
-        # 支路2包含 1x1卷积 + 3x3卷积
-        p2 = F.relu(self.p2_2(F.relu(self.p2_1(x))))
-        # 支路3包含 1x1卷积 + 5x5卷积
-        p3 = F.relu(self.p3_2(F.relu(self.p3_1(x))))
-        # 支路4包含 最大池化和1x1卷积
-        p4 = F.relu(self.p4_2(self.p4_1(x)))
-        # 将每个支路的输出特征图拼接在一起作为最终的输出结果
-        return paddle.concat([p1, p2, p3, p4], axis=1)
-        # return self.batchnorm()
+        # 创建BatchNorm层
+        self._batch_norm = paddle.nn.BatchNorm2D(num_filters)
+
+        self.act = act
+
+    def forward(self, inputs):
+        y = self._conv(inputs)
+        y = self._batch_norm(y)
+        if self.act == 'leaky':
+            y = F.leaky_relu(x=y, negative_slope=0.1)
+        elif self.act == 'relu':
+            y = F.relu(x=y)
+        return y
 
 
-class GoogLeNet(paddle.nn.Layer):
-    def __init__(self):
-        super(GoogLeNet, self).__init__()
-        # GoogLeNet包含五个模块，每个模块后面紧跟一个池化层
-        # 第一个模块包含1个卷积层
-        self.conv1 = Conv2D(in_channels=3, out_channels=64, kernel_size=7, padding=3, stride=1)
-        # 3x3最大池化
-        self.pool1 = MaxPool2D(kernel_size=3, stride=2, padding=1)
-        # 第二个模块包含2个卷积层
-        self.conv2_1 = Conv2D(in_channels=64, out_channels=64, kernel_size=1, stride=1)
-        self.conv2_2 = Conv2D(in_channels=64, out_channels=192, kernel_size=3, padding=1, stride=1)
-        # 3x3最大池化
-        self.pool2 = MaxPool2D(kernel_size=3, stride=2, padding=1)
-        # 第三个模块包含2个Inception块
-        self.block3_1 = Inception(192, 64, (96, 128), (16, 32), 32)
-        self.block3_2 = Inception(256, 128, (128, 192), (32, 96), 64)
-        # 3x3最大池化
-        self.pool3 = MaxPool2D(kernel_size=3, stride=2, padding=1)
-        # 第四个模块包含5个Inception块
-        self.block4_1 = Inception(480, 192, (96, 208), (16, 48), 64)
-        self.block4_2 = Inception(512, 160, (112, 224), (24, 64), 64)
-        self.block4_3 = Inception(512, 128, (128, 256), (24, 64), 64)
-        self.block4_4 = Inception(512, 112, (144, 288), (32, 64), 64)
-        self.block4_5 = Inception(528, 256, (160, 320), (32, 128), 128)
-        # 3x3最大池化
-        self.pool4 = MaxPool2D(kernel_size=3, stride=2, padding=1)
-        # 第五个模块包含2个Inception块
-        self.block5_1 = Inception(832, 256, (160, 320), (32, 128), 128)
-        self.block5_2 = Inception(832, 384, (192, 384), (48, 128), 128)
-        # 全局池化，用的是global_pooling，不需要设置pool_stride
-        self.pool5 = AdaptiveAvgPool2D(output_size=1)
-        self.fc = Linear(in_features=1024, out_features=1)
+# 定义残差块
+# 每个残差块会对输入图片做三次卷积，然后跟输入图片进行短接
+# 如果残差块中第三次卷积输出特征图的形状与输入不一致，则对输入图片做1x1卷积，将其输出形状调整成一致
+class BottleneckBlock(paddle.nn.Layer):
+    def __init__(self,
+                 num_channels,
+                 num_filters,
+                 stride,
+                 shortcut=True):
+        super(BottleneckBlock, self).__init__()
+        # 创建第一个卷积层 1x1
+        self.conv0 = ConvBNLayer(
+            num_channels=num_channels,
+            num_filters=num_filters,
+            filter_size=1,
+            act='relu')
+        # 创建第二个卷积层 3x3
+        self.conv1 = ConvBNLayer(
+            num_channels=num_filters,
+            num_filters=num_filters,
+            filter_size=3,
+            stride=stride,
+            act='relu')
+        # 创建第三个卷积 1x1，但输出通道数乘以4
+        self.conv2 = ConvBNLayer(
+            num_channels=num_filters,
+            num_filters=num_filters * 4,
+            filter_size=1,
+            act=None)
 
-    def forward(self, x):
-        x = self.pool1(F.relu(self.conv1(x)))
-        x = self.pool2(F.relu(self.conv2_2(F.relu(self.conv2_1(x)))))
-        x = self.pool3(self.block3_2(self.block3_1(x)))
-        x = self.block4_3(self.block4_2(self.block4_1(x)))
-        x = self.pool4(self.block4_5(self.block4_4(x)))
-        x = self.pool5(self.block5_2(self.block5_1(x)))
-        x = paddle.reshape(x, [x.shape[0], -1])
-        x = self.fc(x)
-        return x
+        # 如果conv2的输出跟此残差块的输入数据形状一致，则shortcut=True
+        # 否则shortcut = False，添加1个1x1的卷积作用在输入数据上，使其形状变成跟conv2一致
+        if not shortcut:
+            self.short = ConvBNLayer(
+                num_channels=num_channels,
+                num_filters=num_filters * 4,
+                filter_size=1,
+                stride=stride)
+
+        self.shortcut = shortcut
+
+        self._num_channels_out = num_filters * 4
+
+    def forward(self, inputs):
+        y = self.conv0(inputs)
+        conv1 = self.conv1(y)
+        conv2 = self.conv2(conv1)
+
+        # 如果shortcut=True，直接将inputs跟conv2的输出相加
+        # 否则需要对inputs进行一次卷积，将形状调整成跟conv2输出一致
+        if self.shortcut:
+            short = inputs
+        else:
+            short = self.short(inputs)
+
+        y = paddle.add(x=short, y=conv2)
+        y = F.relu(y)
+        return y
+
+
+# 定义ResNet模型
+class ResNet(paddle.nn.Layer):
+    def __init__(self, layers=50, class_dim=1):
+        """
+
+        layers, 网络层数，可以是50, 101或者152
+        class_dim，分类标签的类别数
+        """
+        super(ResNet, self).__init__()
+        self.layers = layers
+        supported_layers = [50, 101, 152]
+        assert layers in supported_layers, \
+            "supported layers are {} but input layer is {}".format(supported_layers, layers)
+
+        if layers == 50:
+            # ResNet50包含多个模块，其中第2到第5个模块分别包含3、4、6、3个残差块
+            depth = [3, 4, 6, 3]
+        elif layers == 101:
+            # ResNet101包含多个模块，其中第2到第5个模块分别包含3、4、23、3个残差块
+            depth = [3, 4, 23, 3]
+        elif layers == 152:
+            # ResNet152包含多个模块，其中第2到第5个模块分别包含3、8、36、3个残差块
+            depth = [3, 8, 36, 3]
+
+        # 残差块中使用到的卷积的输出通道数
+        num_filters = [64, 128, 256, 512]
+
+        # ResNet的第一个模块，包含1个7x7卷积，后面跟着1个最大池化层
+        self.conv = ConvBNLayer(
+            num_channels=3,
+            num_filters=64,
+            filter_size=7,
+            stride=2,
+            act='relu')
+        self.pool2d_max = nn.MaxPool2D(
+            kernel_size=3,
+            stride=2,
+            padding=1)
+
+        # ResNet的第二到第五个模块c2、c3、c4、c5
+        self.bottleneck_block_list = []
+        num_channels = 64
+        for block in range(len(depth)):
+            shortcut = False
+            for i in range(depth[block]):
+                # c3、c4、c5将会在第一个残差块使用stride=2；其余所有残差块stride=1
+                bottleneck_block = self.add_sublayer(
+                    'bb_%d_%d' % (block, i),
+                    BottleneckBlock(
+                        num_channels=num_channels,
+                        num_filters=num_filters[block],
+                        stride=2 if i == 0 and block != 0 else 1,
+                        shortcut=shortcut))
+                num_channels = bottleneck_block._num_channels_out
+                self.bottleneck_block_list.append(bottleneck_block)
+                shortcut = True
+
+        # 在c5的输出特征图上使用全局池化
+        self.pool2d_avg = paddle.nn.AdaptiveAvgPool2D(output_size=1)
+
+        # stdv用来作为全连接层随机初始化参数的方差
+        import math
+        stdv = 1.0 / math.sqrt(2048 * 1.0)
+
+        # 创建全连接层，输出大小为类别数目，经过残差网络的卷积和全局池化后，
+        # 卷积特征的维度是[B,2048,1,1]，故最后一层全连接的输入维度是2048
+        self.out = nn.Linear(in_features=2048, out_features=class_dim,
+                             weight_attr=paddle.ParamAttr(
+                                 initializer=paddle.nn.initializer.Uniform(-stdv, stdv)))
+
+    def forward(self, inputs):
+        y = self.conv(inputs)
+        y = self.pool2d_max(y)
+        for bottleneck_block in self.bottleneck_block_list:
+            y = bottleneck_block(y)
+        y = self.pool2d_avg(y)
+        y = paddle.reshape(y, [y.shape[0], -1])
+        y = self.out(y)
+        return y
 
 
 # 创建模型
-model = GoogLeNet()
-print(len(model.parameters()))
+model = ResNet()
+# 定义优化器
 opt = paddle.optimizer.Momentum(learning_rate=0.001, momentum=0.9, parameters=model.parameters(), weight_decay=0.001)
 # 启动训练过程
 train_pm(model, opt)
